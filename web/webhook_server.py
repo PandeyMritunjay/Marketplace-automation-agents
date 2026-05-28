@@ -3,10 +3,10 @@ import hmac
 import hashlib
 import base64
 import time
-from lighthouse.config import settings
-from lighthouse.integrations.database import get_agent_db
-from lighthouse.models.agent import Dispute, DisputeStatus
-from lighthouse.integrations.slack import SlackClient
+from config import settings
+from integrations.database import get_agent_db
+from models.agent import Dispute, DisputeStatus
+from integrations.slack import SlackClient
 import logging
 
 logger = logging.getLogger(__name__)
