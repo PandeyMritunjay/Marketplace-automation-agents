@@ -23,10 +23,10 @@ class SupportLead:
         self.slack = SlackClient()
         self.gmail = GmailClient()
     
-    def process_overnight_batch(self) -> Dict:
+    def process_overnight_batch(self, limit: int = 10) -> Dict:
         """
         Process overnight support emails and send morning briefing.
-        
+
         Steps:
         1. Fetch unread emails from Gmail
         2. Classify each email (sender, intent, priority)
@@ -35,10 +35,10 @@ class SupportLead:
         """
         agent_db = get_agent_db()
         marketplace_db = get_marketplace_db()
-        
+
         try:
-            # Step 1: Fetch unread emails
-            emails = self.gmail.get_unread_emails(limit=100)
+            # Step 1: Fetch unread emails (reduced limit for faster testing)
+            emails = self.gmail.get_unread_emails(limit=limit)
             logger.info(f"Fetched {len(emails)} unread emails")
             
             if not emails:
@@ -205,7 +205,7 @@ class SupportLead:
         sender_type: SenderType
     ) -> Dict:
         """Classify email intent and priority using LLM."""
-        
+
         categories = [
             "order_status",
             "refund_return",
@@ -216,7 +216,7 @@ class SupportLead:
             "complaint_escalation",
             "other"
         ]
-        
+
         schema_description = """
         {
             "category": "one of: order_status, refund_return, account_password, seller_onboarding, payout_payment, product_listing, complaint_escalation, other",
@@ -224,12 +224,20 @@ class SupportLead:
             "confidence": "float between 0 and 1"
         }
         """
-        
+
+        # Truncate body to avoid context length errors
+        max_body_length = 4000  # characters
+        truncated = False
+        if len(body) > max_body_length:
+            body = body[:max_body_length] + "... [truncated]"
+            truncated = True
+
         prompt = f"""Classify this support email.
 
 Sender type: {sender_type.value}
 Subject: {subject}
 Body: {body}
+{'(Note: Email body was truncated due to length)' if truncated else ''}
 
 Available categories: {', '.join(categories)}
 
@@ -237,13 +245,13 @@ Priority guidelines:
 - HIGH: payout issues, account suspensions, threats (chargebacks, legal), top-tier sellers
 - MEDIUM: return requests, listing issues, onboarding questions
 - LOW: order status, password resets, general questions"""
-        
+
         result = self.llm.extract_structured_data(
             text=body,
             extraction_prompt=prompt,
             schema_description=schema_description
         )
-        
+
         return result
     
     def _generate_draft(
@@ -317,8 +325,101 @@ Marketplace Team"""
         db.add(action)
         db.commit()
     
-    def approve_batch_low_priority(self) -> int:
-        """Approve all low-priority drafted tickets."""
+    def _test_single_email(self, body: str, from_email: str, subject: str) -> Dict:
+        """Test classification on a single email (for CLI testing)."""
+        from lighthouse.integrations.database import get_marketplace_db, get_agent_db
+        
+        marketplace_db = get_marketplace_db()
+        agent_db = get_agent_db()
+        
+        try:
+            # Identify sender type
+            sender_type, sender_id = self._identify_sender(from_email, marketplace_db)
+            
+            # Keyword override check
+            if self._has_high_priority_keywords(body + subject):
+                priority = TicketPriority.HIGH
+                category = TicketCategory.COMPLAINT_ESCALATION
+                confidence = 1.0
+            else:
+                # LLM classification
+                classification = self._classify_email(body, subject, sender_type)
+                category = TicketCategory(classification['category'])
+                priority = TicketPriority(classification['priority'])
+                confidence = classification['confidence']
+            
+            # Generate draft if appropriate
+            draft = None
+            if confidence > 0.8 and priority != TicketPriority.HIGH:
+                draft = self._generate_draft({'body': body, 'subject': subject}, category, sender_type)
+            
+            return {
+                'sender_type': sender_type.value,
+                'sender_id': sender_id,
+                'category': category.value,
+                'priority': priority.value,
+                'classification_confidence': confidence,
+                'agent_draft': draft,
+                'reasoning': f"Email classified as {category.value} with {priority.value} priority based on content analysis"
+            }
+            
+        finally:
+            marketplace_db.close()
+            agent_db.close()
+    
+    def approve_batch_low_priority(self) -> Dict:
+        """Show preview of low-priority tickets with mismatch flagging before sending."""
+        agent_db = get_agent_db()
+        
+        try:
+            tickets = agent_db.query(SupportTicket).filter(
+                SupportTicket.priority == TicketPriority.LOW,
+                SupportTicket.status == TicketStatus.DRAFTED,
+                SupportTicket.sender_type == SenderType.BUYER  # Only buyers for batch approve
+            ).all()
+            
+            # Build preview with mismatch flagging
+            preview = []
+            for ticket in tickets:
+                if ticket.agent_draft:
+                    # Check for category-sender type mismatch
+                    mismatch = False
+                    if ticket.sender_type == SenderType.SELLER and ticket.category in [TicketCategory.ORDER_STATUS, TicketCategory.ACCOUNT_PASSWORD]:
+                        mismatch = True
+                    elif ticket.sender_type == SenderType.BUYER and ticket.category in [TicketCategory.SELLER_ONBOARDING, TicketCategory.PAYOUT_PAYMENT]:
+                        mismatch = True
+                    
+                    preview.append({
+                        'ticket_id': ticket.id,
+                        'sender_email': ticket.sender_email,
+                        'sender_type': ticket.sender_type.value,
+                        'category': ticket.category.value,
+                        'mismatch_flag': '⚠️' if mismatch else '',
+                        'draft_preview': ticket.agent_draft[:100] + '...' if len(ticket.agent_draft) > 100 else ticket.agent_draft
+                    })
+            
+            # Send preview to Slack
+            if preview:
+                self.slack.send_message(
+                    channel=settings.slack_channel_support,
+                    text=f"📋 Approve All Low-Priority Preview ({len(preview)} tickets)\n\n" +
+                          "\n".join([f"{p['mismatch_flag']} {p['sender_email']} — {p['category']}" for p in preview])
+                )
+            
+            return {
+                'total_tickets': len(preview),
+                'preview': preview,
+                'ready_to_send': len([p for p in preview if not p['mismatch_flag']])
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating preview: {e}")
+            return {'total_tickets': 0, 'preview': [], 'ready_to_send': 0}
+        finally:
+            agent_db.close()
+    
+    def confirm_and_send_batch(self) -> int:
+        """Confirm and send all low-priority drafted tickets via Gmail."""
         agent_db = get_agent_db()
         
         try:
@@ -330,13 +431,18 @@ Marketplace Team"""
             
             count = 0
             for ticket in tickets:
-                if ticket.agent_draft:
-                    # In production, send the email via Gmail
+                if ticket.agent_draft and ticket.sender_email:
+                    # Send the email via Gmail
+                    self.gmail.send_email(
+                        to=ticket.sender_email,
+                        subject=f"Re: Your support inquiry",
+                        body=ticket.agent_draft
+                    )
                     ticket.status = TicketStatus.SENT
                     count += 1
             
             agent_db.commit()
-            logger.info(f"Approved {count} low-priority tickets")
+            logger.info(f"Approved and sent {count} low-priority tickets via Gmail")
             return count
             
         except Exception as e:

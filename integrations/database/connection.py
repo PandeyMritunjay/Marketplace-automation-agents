@@ -2,6 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from lighthouse.config import settings
 from lighthouse.models.agent.base import Base as AgentBase
+from lighthouse.models.marketplace.base import Base as MarketplaceBase
 
 
 # Marketplace database (read-only)
@@ -35,5 +36,6 @@ def get_agent_db() -> Session:
 
 
 def init_db():
-    """Initialize the agent database schema."""
+    """Initialize both agent and marketplace database schemas."""
     AgentBase.metadata.create_all(bind=agent_engine)
+    MarketplaceBase.metadata.create_all(bind=marketplace_engine)

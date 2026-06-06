@@ -3,12 +3,14 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from lighthouse.integrations.database import get_marketplace_db, get_agent_db
 from lighthouse.integrations.slack import SlackClient
+from lighthouse.integrations.gmail import GmailClient
 from lighthouse.services.llm import OpenAIService
 from lighthouse.models.marketplace import Order, Seller, Buyer
 from lighthouse.models.agent import Dispute, DisputeType, DisputeStatus, ConfidenceLevel, AgentAction, ActionType, AgentType
 from lighthouse.config import settings
 import logging
 import json
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +19,60 @@ class DisputeHandler:
     def __init__(self):
         self.llm = OpenAIService()
         self.slack = SlackClient()
+        self.gmail = GmailClient()
+    
+    def fetch_and_process_dispute_emails(self, since: Optional[datetime] = None, limit: int = 50) -> Dict:
+        """
+        Fetch dispute emails from Gmail and process them.
+        
+        Steps:
+        1. Fetch unread emails with dispute-related keywords
+        2. Extract buyer email from each email
+        3. Process each complaint
+        """
+        try:
+            # Fetch unread emails with dispute keywords
+            emails = self.gmail.get_unread_emails(since=since, limit=limit)
+            
+            dispute_keywords = ['dispute', 'damaged', 'missing order', 'never arrived', 'wrong item', 'not as described']
+            dispute_emails = []
+            
+            for email in emails:
+                text = (email.get('subject', '') + ' ' + email.get('body', '')).lower()
+                if any(keyword in text for keyword in dispute_keywords):
+                    dispute_emails.append(email)
+            
+            logger.info(f"Found {len(dispute_emails)} dispute-related emails out of {len(emails)} total")
+            
+            processed = []
+            for email in dispute_emails:
+                buyer_email = self._extract_email(email['from'])
+                complaint_text = email['body']
+                
+                result = self.process_complaint(complaint_text, buyer_email)
+                
+                if result:
+                    processed.append(result)
+                    # Mark email as read
+                    self.gmail.mark_as_read(email['id'])
+            
+            return {
+                'total_emails': len(emails),
+                'dispute_emails': len(dispute_emails),
+                'processed': len(processed),
+                'results': processed
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching and processing dispute emails: {e}")
+            return {'total_emails': 0, 'dispute_emails': 0, 'processed': 0, 'results': []}
+    
+    def _extract_email(self, from_header: str) -> str:
+        """Extract email address from From header."""
+        match = re.search(r'<([^>]+)>', from_header)
+        if match:
+            return match.group(1)
+        return from_header
     
     def process_complaint(self, complaint_text: str, buyer_email: str) -> Optional[Dict]:
         """
@@ -44,8 +100,13 @@ class DisputeHandler:
             ).first()
             
             if not buyer:
-                logger.error(f"Buyer not found: {buyer_email}")
-                return None
+                logger.warning(f"Buyer not found: {buyer_email}, cannot create dispute record without buyer_id")
+                return {
+                    'error': 'Buyer not found in database',
+                    'buyer_email': buyer_email,
+                    'recommendation': 'Add buyer to marketplace database first',
+                    'confidence': 'low'
+                }
             
             # Step 3: Get order (assume most recent order for now)
             order = marketplace_db.query(Order).filter(
@@ -53,8 +114,14 @@ class DisputeHandler:
             ).order_by(Order.created_at.desc()).first()
             
             if not order:
-                logger.error(f"No order found for buyer: {buyer_email}")
-                return None
+                logger.warning(f"No order found for buyer: {buyer_email}, cannot create dispute record without order_id")
+                return {
+                    'error': 'No order found for buyer',
+                    'buyer_email': buyer_email,
+                    'buyer_id': buyer.id,
+                    'recommendation': 'Buyer exists but has no orders in database',
+                    'confidence': 'low'
+                }
             
             # Get seller
             seller = marketplace_db.query(Seller).filter(
@@ -100,7 +167,10 @@ class DisputeHandler:
                 seller_name=seller.name,
                 seller_tier=seller.tier.value,
                 recommendation=policy_result['recommendation'],
-                confidence=policy_result['confidence'].upper()
+                confidence=policy_result['confidence'].upper(),
+                seller_message_draft=drafts['seller_message'],
+                buyer_message_draft=drafts['buyer_message'],
+                internal_summary=drafts['internal_summary']
             )
             
             # Log action
@@ -110,6 +180,25 @@ class DisputeHandler:
                 dispute.id,
                 f"Created dispute #{dispute.id} with {policy_result['confidence']} confidence"
             )
+            
+            # Print full JSON output to console
+            output_json = {
+                'dispute_id': dispute.id,
+                'dispute_type': extracted.get('dispute_type', 'unknown'),
+                'confidence_level': policy_result['confidence'],
+                'policy_match': policy_result['policy'],
+                'buyer_sentiment': extracted.get('sentiment'),
+                'seller_message_draft': drafts['seller_message'],
+                'buyer_message_draft': drafts['buyer_message'],
+                'internal_summary': drafts['internal_summary'],
+                'recommendation': policy_result['recommendation'],
+                'complicating_factors': policy_result['complicating_factors']
+            }
+            print("\n" + "="*80)
+            print("FULL DISPUTE OUTPUT (JSON):")
+            print("="*80)
+            print(json.dumps(output_json, indent=2))
+            print("="*80 + "\n")
             
             return {
                 'dispute_id': dispute.id,

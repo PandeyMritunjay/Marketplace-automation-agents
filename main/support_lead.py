@@ -10,10 +10,14 @@ Usage:
     
     # Real-time processing (continuously polls for new emails)
     python -m lighthouse.main.support_lead --mode realtime
+    
+    # Process a specific email (for testing)
+    python -m lighthouse.main.support_lead --email-body "Where's my payout?" --email-from "mritunjaypandey0429@gmail.com" --email-subject "Payout inquiry"
 """
 import argparse
 import logging
 import time
+import json
 from lighthouse.agents.support_lead import SupportLead
 from lighthouse.integrations.database import init_db
 
@@ -23,8 +27,11 @@ logger = logging.getLogger(__name__)
 
 def main():
     parser = argparse.ArgumentParser(description="Support Lead Agent")
-    parser.add_argument("--mode", type=str, choices=["batch", "realtime"], default="batch", help="Processing mode")
+    parser.add_argument("--mode", type=str, choices=["batch", "realtime"], help="Processing mode")
     parser.add_argument("--init-db", action="store_true", help="Initialize database schema")
+    parser.add_argument("--email-body", type=str, help="Email body text (for testing)")
+    parser.add_argument("--email-from", type=str, help="Sender email address (for testing)")
+    parser.add_argument("--email-subject", type=str, help="Email subject (for testing)")
     
     args = parser.parse_args()
     
@@ -32,6 +39,21 @@ def main():
         logger.info("Initializing database schema...")
         init_db()
         logger.info("Database initialized successfully")
+        return
+    
+    # Handle single email testing
+    if args.email_body and args.email_from:
+        agent = SupportLead()
+        result = agent._test_single_email(
+            body=args.email_body,
+            from_email=args.email_from,
+            subject=args.email_subject or "No subject"
+        )
+        print("\n" + "="*80)
+        print("SUPPORT LEAD OUTPUT (JSON):")
+        print("="*80)
+        print(json.dumps(result, indent=2))
+        print("="*80 + "\n")
         return
     
     agent = SupportLead()

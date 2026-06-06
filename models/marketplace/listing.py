@@ -1,10 +1,8 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Enum, Text, ARRAY, JSON
-from sqlalchemy.ext.declarative import declarative_base
+from .base import Base
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
-
-Base = declarative_base()
 
 
 class ListingStatus(str, enum.Enum):

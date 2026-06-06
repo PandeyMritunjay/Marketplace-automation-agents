@@ -1,9 +1,7 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, Enum
-from sqlalchemy.ext.declarative import declarative_base
+from .base import Base
 from datetime import datetime
 import enum
-
-Base = declarative_base()
 
 
 class SellerTier(str, enum.Enum):

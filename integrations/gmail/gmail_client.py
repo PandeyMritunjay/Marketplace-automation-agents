@@ -5,6 +5,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import os
 import pickle
+import base64
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 import logging

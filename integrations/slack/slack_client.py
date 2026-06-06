@@ -40,20 +40,23 @@ class SlackClient:
         seller_name: str,
         seller_tier: str,
         recommendation: str,
-        confidence: str
+        confidence: str,
+        seller_message_draft: str = "",
+        buyer_message_draft: str = "",
+        internal_summary: str = ""
     ) -> Optional[str]:
         """Send a dispute notification to the disputes channel."""
-        text = f"🔔 Dispute #{dispute_id} — {dispute_type} — ${amount:.2f}\n"
+        text = f"� New Dispute: Order #{dispute_id} — {dispute_type}\n"
         text += f"Buyer: {buyer_name} | Seller: {seller_name} ({seller_tier})\n"
-        text += f"Recommendation: {recommendation}\n"
-        text += f"Confidence: {confidence}"
+        text += f"Amount: ${amount:.2f} | Confidence: {confidence}\n"
+        text += f"Recommendation: {recommendation}"
         
         blocks = [
             {
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": f"🔔 Dispute #{dispute_id} — {dispute_type} — ${amount:.2f}"
+                    "text": f"� New Dispute: Order #{dispute_id} — {dispute_type}"
                 }
             },
             {
@@ -69,7 +72,7 @@ class SlackClient:
                     },
                     {
                         "type": "mrkdwn",
-                        "text": f"*Recommendation:*\n{recommendation}"
+                        "text": f"*Amount:*\n${amount:.2f}"
                     },
                     {
                         "type": "mrkdwn",
@@ -78,40 +81,68 @@ class SlackClient:
                 ]
             },
             {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {
-                            "type": "plain_text",
-                            "text": "✅ Approve"
-                        },
-                        "action_id": "approve_draft",
-                        "value": str(dispute_id),
-                        "style": "primary"
-                    },
-                    {
-                        "type": "button",
-                        "text": {
-                            "type": "plain_text",
-                            "text": "❌ Decline"
-                        },
-                        "action_id": "decline_draft",
-                        "value": str(dispute_id),
-                        "style": "danger"
-                    },
-                    {
-                        "type": "button",
-                        "text": {
-                            "type": "plain_text",
-                            "text": "✏️ Edit"
-                        },
-                        "action_id": "edit_draft",
-                        "value": str(dispute_id)
-                    }
-                ]
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Recommendation:* {recommendation}"
+                }
             }
         ]
+        
+        # Add seller message draft if available
+        if seller_message_draft:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Seller Message Draft:*\n```{seller_message_draft}```"
+                }
+            })
+        
+        # Add internal summary if available
+        if internal_summary:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Internal Summary:*\n{internal_summary}"
+                }
+            })
+        
+        blocks.append({
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "✅ Approve"
+                    },
+                    "action_id": "approve_draft",
+                    "value": str(dispute_id),
+                    "style": "primary"
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "❌ Decline"
+                    },
+                    "action_id": "decline_draft",
+                    "value": str(dispute_id),
+                    "style": "danger"
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "✏️ Edit"
+                    },
+                    "action_id": "edit_draft",
+                    "value": str(dispute_id)
+                }
+            ]
+        })
         
         return self.send_message(settings.slack_channel_disputes, text, blocks=blocks)
     
