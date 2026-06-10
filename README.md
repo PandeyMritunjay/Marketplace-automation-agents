@@ -1,6 +1,7 @@
 # Lighthouse AI Agents
 
 Three specialized AI agents that automate operations for marketplaces, reducing manual workload for ops teams.
+DEMO LINK: https://drive.google.com/file/d/10iIEdwgcbn6QQJH6_Tq2juyR5bypEvFL/view?usp=sharing
 
 ## 🚀 Overview
 
